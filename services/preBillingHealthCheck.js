@@ -12,15 +12,15 @@ class PreBillingHealthCheck {
     this.warningThresholdDays = config.warningThresholdDays || 3;
     this.batchSize = config.batchSize || 50;
     this.maxRetries = config.maxRetries || 3;
-    
+
     if (!this.database) {
       throw new Error('database is required');
     }
-    
+
     if (!this.emailService) {
       throw new Error('emailService is required');
     }
-    
+
     this.ensureDatabaseSchema();
   }
 
@@ -67,14 +67,14 @@ class PreBillingHealthCheck {
   async runDailyHealthCheck(options = {}) {
     const now = options.now || new Date();
     const targetDate = new Date(now.getTime() + (this.warningThresholdDays * 24 * 60 * 60 * 1000));
-    
+
     console.log(`Starting pre-billing health check for ${targetDate.toISOString()}`);
-    
+
     try {
       // Get subscriptions due for billing in exactly 3 days
       const subscriptions = this.getSubscriptionsDueForBilling(targetDate);
       console.log(`Found ${subscriptions.length} subscriptions due for billing on ${targetDate.toISOString()}`);
-      
+
       if (subscriptions.length === 0) {
         return {
           processed: 0,
@@ -86,13 +86,13 @@ class PreBillingHealthCheck {
 
       // Process subscriptions in batches
       const results = await this.processSubscriptions(subscriptions);
-      
+
       // Clean up expired cache entries
       this.balanceChecker.clearExpiredCache();
-      
+
       console.log(`Pre-billing health check completed:`, results);
       return results;
-      
+
     } catch (error) {
       console.error('Pre-billing health check failed:', error);
       throw error;
@@ -106,7 +106,7 @@ class PreBillingHealthCheck {
    */
   getSubscriptionsDueForBilling(targetDate) {
     const targetDateString = targetDate.toISOString().split('T')[0]; // YYYY-MM-DD format
-    
+
     const query = `
       SELECT 
         creator_id AS creatorId,
@@ -122,7 +122,7 @@ class PreBillingHealthCheck {
         AND DATE(next_billing_date) = ?
         AND (warning_sent_at IS NULL OR DATE(warning_sent_at) != DATE('now'))
     `;
-    
+
     return this.database.db.prepare(query).all(targetDateString);
   }
 
@@ -141,13 +141,13 @@ class PreBillingHealthCheck {
     for (let i = 0; i < subscriptions.length; i += this.batchSize) {
       const batch = subscriptions.slice(i, i + this.batchSize);
       console.log(`Processing batch ${Math.floor(i / this.batchSize) + 1}/${Math.ceil(subscriptions.length / this.batchSize)}`);
-      
+
       const batchResults = await this.processBatch(batch);
       processed += batchResults.processed;
       warningsSent += batchResults.warningsSent;
       errors += batchResults.errors;
       errorDetails.push(...batchResults.errorDetails);
-      
+
       // Add delay between batches to respect rate limits
       if (i + this.batchSize < subscriptions.length) {
         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -186,23 +186,25 @@ class PreBillingHealthCheck {
     for (let i = 0; i < batch.length; i++) {
       const subscription = batch[i];
       const healthCheck = healthChecks[i];
-      
+
       try {
         processed++;
-        
+
         if (!healthCheck.isHealthy) {
           // Send warning email
           await this.sendWarningEmail(subscription, healthCheck);
           warningsSent++;
-          
+
           // Update warning timestamp
           this.updateWarningTimestamp(subscription);
-          
-          console.log(`Warning sent to ${subscription.userEmail} for wallet ${subscription.walletAddress}`);
+
+          // Log without exposing user data
+          console.log('Warning sent for subscription with health check failure');
         } else {
-          console.log(`Health check passed for wallet ${subscription.walletAddress}`);
+          // Log without exposing user data
+          console.log('Health check passed for subscription');
         }
-        
+
       } catch (error) {
         errors++;
         const errorDetail = {
@@ -266,7 +268,7 @@ class PreBillingHealthCheck {
    */
   updateWarningTimestamp(subscription) {
     const now = new Date().toISOString();
-    
+
     this.database.db.prepare(`
       UPDATE subscriptions 
       SET warning_sent_at = ?
@@ -340,7 +342,7 @@ class PreBillingHealthCheck {
   getSubscriptionsNeedingWarnings(daysAhead = this.warningThresholdDays) {
     const targetDate = new Date(Date.now() + (daysAhead * 24 * 60 * 60 * 1000));
     const targetDateString = targetDate.toISOString().split('T')[0];
-    
+
     const query = `
       SELECT 
         creator_id AS creatorId,
@@ -355,7 +357,7 @@ class PreBillingHealthCheck {
         AND DATE(next_billing_date) = ?
         AND (warning_sent_at IS NULL OR DATE(warning_sent_at) != DATE('now'))
     `;
-    
+
     return this.database.db.prepare(query).all(targetDateString);
   }
 
