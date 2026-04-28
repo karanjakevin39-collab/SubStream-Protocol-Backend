@@ -43,7 +43,7 @@ A comprehensive backend API for the SubStream Protocol, supporting wallet-based 
 - **Retry logic**: Automatic retry with exponential backoff for failed operations
 - **Circuit breaker**: Prevents cascading failures during high load
 - **Dead letter queue**: Failed message handling for debugging
-- **Background worker**: Separate process for handling emails, notifications, and leaderboard updates
+- **Background worker**: Separate process for handling emails, notifications.
 
 
 
