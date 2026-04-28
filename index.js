@@ -107,6 +107,9 @@ const { CreatorActionService } = require('./src/services/creatorActionService');
 const { CreatorAuditLogService } = require('./src/services/creatorAuditLogService');
 const { CreatorAuthService } = require('./src/services/creatorAuthService');
 const { SorobanSubscriptionVerifier } = require('./src/services/sorobanSubscriptionVerifier');
+const EnhancedSorobanService = require('./services/enhancedSorobanService');
+const EndpointMonitoringService = require('./services/endpointMonitoringService');
+const { createEndpointMonitoringMiddleware, createErrorMonitoringMiddleware, addRequestStartTime } = require('./middleware/endpointMonitoring');
 const { SubscriptionService } = require('./src/services/subscriptionService');
 const { SubscriptionExpiryChecker } = require('./src/services/subscriptionExpiryChecker');
 const { IPIntelligenceService } = require('./src/services/ipIntelligenceService');
@@ -157,12 +160,28 @@ async function createApp(dependencies = {}) {
     dependencies.creatorAuthService || new CreatorAuthService(config);
   const subscriptionVerifier =
     dependencies.subscriptionVerifier || new SorobanSubscriptionVerifier(config);
+  
+  // Initialize enhanced Soroban service with circuit breaker
+  const enhancedSorobanService = 
+    dependencies.enhancedSorobanService || new EnhancedSorobanService(config);
+  app.set('enhancedSorobanService', enhancedSorobanService);
+  
+  // Initialize endpoint monitoring service
+  const endpointMonitoringService = 
+    dependencies.endpointMonitoringService || new EndpointMonitoringService(config);
+  app.set('endpointMonitoringService', endpointMonitoringService);
   const tokenService = dependencies.tokenService || new CdnTokenService(config);
 
   // ── Global middleware ──────────────────────────────────────────────────────
   app.use(cors());
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
+
+  // Add request start time for accurate monitoring
+  app.use(addRequestStartTime);
+
+  // Endpoint monitoring middleware
+  app.use(createEndpointMonitoringMiddleware(endpointMonitoringService));
 
   // Prometheus metrics middleware
   app.use((req, res, next) => {
@@ -339,6 +358,8 @@ async function createApp(dependencies = {}) {
     app.use('/api/subscription', require('./routes/subscription'));
     // Payouts API
     app.use('/api/payouts', require('./routes/payouts'));
+    // Sandbox API
+    app.use('/api/sandbox', require('./routes/sandbox'));
 
     // Social token gating endpoints
     app.use('/api/social-token', createSocialTokenRoutes());
@@ -419,6 +440,18 @@ async function createApp(dependencies = {}) {
     app.use('/auth', require('./routes/auth'));
     app.use('/auth', require('./routes/stellarAuth'));
 
+    // ── SEP-24 Interactive Flow routes ───────────────────────────────────────────
+    app.use('/sep24', require('./routes/sep24'));
+
+    // ── Global Reputation System routes ────────────────────────────────────────
+    app.use('/api/reputation', require('./routes/globalReputation'));
+
+    // ── Soroban Health and Circuit Breaker routes ───────────────────────────────
+    app.use('/api/soroban', require('./routes/sorobanHealth'));
+
+    // ── Endpoint Monitoring and Alerting routes ─────────────────────────────────
+    app.use('/api/monitoring', require('./routes/monitoring'));
+
     // ── Tier-gated content routes ──────────────────────────────────────────────
     // attachTier already ran globally; routes/content.js uses requireTier
     // on individual endpoints as needed.
@@ -428,6 +461,9 @@ async function createApp(dependencies = {}) {
     app.use('/analytics', require('./routes/analytics'));
     app.use('/storage', require('./routes/storage'));
     app.use('/posts', require('./routes/posts'));
+
+    // ── Usage Quota and Monetization routes ───────────────────────────────────────
+    app.use('/api/v1/usage-quota', require('./routes/usageQuota'));
 
     // ── CDN token endpoints ────────────────────────────────────────────────────
     app.post('/api/cdn/token', async (req, res) => {
@@ -689,26 +725,29 @@ async function createApp(dependencies = {}) {
         );
 
         // ── Error handlers ─────────────────────────────────────────────────────────
+        app.use(createErrorMonitoringMiddleware(endpointMonitoringService));
         app.use((err, req, res, next) => {
           console.error('Unhandled error:', err);
           res.status(500).json({ success: false, error: 'Internal server error' });
         });
 
-        app.use((req, res) => {
-          res.status(404).json({ success: false, error: 'Endpoint not found' });
-          app.use('/api/videos', createVideoRoutes(config, database, videoWorker));
+        // Video routes
+        app.use('/api/videos', createVideoRoutes(config, database, videoWorker));
 
-          // Device fingerprinting endpoints for fraud prevention
-          if (process.env.REDIS_URL || process.env.REDIS_HOST) {
-            const deviceService = new DeviceFingerprintService(getRedisClient());
-            app.set('deviceFingerprintService', deviceService);
-            app.use('/api/device', createDeviceRoutes);
-          }
+        // Merchant treasury routes
+        app.use('/api/v1/merchants', require('./routes/merchants'));
 
-          // API Documentation with Swagger UI
-          app.use('/api/docs', createSwaggerRoutes);
+        // Device fingerprinting endpoints for fraud prevention
+        if (process.env.REDIS_URL || process.env.REDIS_HOST) {
+          const deviceService = new DeviceFingerprintService(getRedisClient());
+          app.set('deviceFingerprintService', deviceService);
+          app.use('/api/device', createDeviceRoutes);
+        }
 
-          // IP Intelligence management routes
+        // API Documentation with Swagger UI
+        app.use('/api/docs', createSwaggerRoutes);
+
+        // IP Intelligence management routes
           if (ipIntelligenceService) {
             app.use('/api/ip-intelligence', createIPIntelligenceRoutes({
               ipIntelligenceService,
@@ -723,6 +762,11 @@ async function createApp(dependencies = {}) {
               behavioralService
             }));
           }
+
+          // 404 handler
+          app.use((req, res) => {
+            res.status(404).json({ success: false, error: 'Endpoint not found' });
+          });
 
           // Health check endpoint
           app.get('/health', async (req, res) => {
