@@ -429,6 +429,9 @@ async function createApp(dependencies = {}) {
     app.use('/storage', require('./routes/storage'));
     app.use('/posts', require('./routes/posts'));
 
+    // ── Usage Quota and Monetization routes ───────────────────────────────────────
+    app.use('/api/v1/usage-quota', require('./routes/usageQuota'));
+
     // ── CDN token endpoints ────────────────────────────────────────────────────
     app.post('/api/cdn/token', async (req, res) => {
       const requiredFields = ['walletAddress', 'creatorAddress', 'contentId', 'segmentPath'];
