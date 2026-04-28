@@ -35,6 +35,14 @@ async function processWebhook(job) {
   let errorMessage = null;
   let success = false;
 
+  const headers = {
+  'Content-Type': 'application/json',
+  'User-Agent': 'SubStream-Webhook-Dispatcher/1.0',
+  'X-Substream-Event': eventType,
+  'X-Substream-Timestamp': timestamp.toString(),
+  'X-Substream-Signature': signature   // ← HMAC signature
+    };
+
   try {
     const response = await axios.post(webhookUrl, payload, {
       timeout: WEBHOOK_TIMEOUT_MS,

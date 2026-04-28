@@ -45,6 +45,8 @@ A comprehensive backend API for the SubStream Protocol, supporting wallet-based 
 - **Dead letter queue**: Failed message handling for debugging
 - **Background worker**: Separate process for handling emails, notifications, and leaderboard updates
 
+
+
 ## Quick Start
 
 ### Prerequisites

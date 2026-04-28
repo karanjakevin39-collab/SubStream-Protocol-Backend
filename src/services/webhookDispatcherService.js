@@ -1,6 +1,7 @@
-const axios = require('axios');
+// src/services/webhookDispatcherService.js
+const crypto = require('crypto');
 const { Queue } = require('bullmq');
-const { getRedisConnection } = require('../config/redis'); // adjust path
+const { getRedisConnection } = require('../config/redis');
 
 class WebhookDispatcherService {
   constructor() {
@@ -8,60 +9,63 @@ class WebhookDispatcherService {
       connection: getRedisConnection(),
       defaultJobOptions: {
         attempts: 5,
-        backoff: {
-          type: 'exponential',
-          delay: 5000, // 5 seconds first retry
-        },
-        removeOnComplete: { age: 7 * 24 * 3600 }, // keep 7 days
-        removeOnFail: { age: 30 * 24 * 3600 },    // keep 30 days
+        backoff: { type: 'exponential', delay: 5000 },
+        removeOnComplete: { age: 7 * 24 * 3600 },
+        removeOnFail: { age: 30 * 24 * 3600 },
       }
-    });
-
-    this.queue.on('completed', (job) => {
-      console.log(`[Webhook] Success → ${job.data.webhook_url} | Event: ${job.data.eventType}`);
-    });
-
-    this.queue.on('failed', (job, err) => {
-      console.error(`[Webhook] Failed after ${job.attemptsMade} attempts → ${job.data.webhook_url}`, err.message);
     });
   }
 
   /**
-   * Dispatch webhook asynchronously
+   * Dispatch webhook with HMAC signature
    */
   async dispatch(eventType, payload, merchantId, subscriptionId = null) {
-    if (!merchantId) {
-      console.warn(`[Webhook] Cannot dispatch: merchantId is missing for event ${eventType}`);
+    if (!merchantId) return;
+
+    const merchant = await this.getMerchantWithSecret(merchantId);
+    if (!merchant?.webhook_url || !merchant?.webhook_secret) {
+      console.warn(`[Webhook] Merchant ${merchantId} missing webhook_url or webhook_secret`);
       return;
     }
 
-    // Get merchant's webhook URL from DB
-    const merchant = await this.getMerchantWebhook(merchantId);
-    if (!merchant || !merchant.webhook_url) {
-      console.log(`[Webhook] No webhook URL configured for merchant ${merchantId}`);
-      return;
-    }
+    const timestamp = Math.floor(Date.now() / 1000); // Unix timestamp (seconds)
+
+    // Add timestamp to payload for replay protection
+    const signedPayload = {
+      ...payload,
+      timestamp
+    };
+
+    const signature = this.generateHMACSignature(signedPayload, merchant.webhook_secret);
 
     const jobData = {
       eventType,
-      payload,
+      payload: signedPayload,
       webhookUrl: merchant.webhook_url,
       merchantId,
       subscriptionId,
-      timestamp: new Date().toISOString()
+      signature,
+      timestamp
     };
 
     await this.queue.add('dispatch-webhook', jobData);
-    console.log(`[Webhook] Queued ${eventType} for merchant ${merchantId}`);
+    console.log(`[Webhook] Queued signed ${eventType} for merchant ${merchantId}`);
   }
 
-  async getMerchantWebhook(merchantId) {
+  generateHMACSignature(payload, secret) {
+    const payloadStr = JSON.stringify(payload);
+    return crypto
+      .createHmac('sha256', secret)
+      .update(payloadStr, 'utf8')
+      .digest('hex');
+  }
+
+  async getMerchantWithSecret(merchantId) {
     const knex = require('knex')(require('../knexfile')[process.env.NODE_ENV || 'development']);
     const merchant = await knex('merchants')
       .where({ id: merchantId })
-      .select('webhook_url')
+      .select('webhook_url', 'webhook_secret')
       .first();
-    
     await knex.destroy();
     return merchant;
   }
